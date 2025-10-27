@@ -1,0 +1,86 @@
+services:
+  postgres-app:
+    image: postgres:16-alpine
+    container_name: postgres-sfbikeshare-01
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB_APP}
+      - POSTGRES_USER=${POSTGRES_USER_APP}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD_APP}
+    volumes:
+      - ../data:/app/data
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT_APP:-5432}:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER_APP}"]
+      interval: 1m00s
+      timeout: 20s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - sfbikeshare-network
+
+  python-app:
+    image: python:3.12-slim
+    container_name: python-sfbikeshare-app
+    working_dir: /app
+    volumes:
+      - ./src:/app/src
+      - ./sql:/app/sql
+      - ./requirements.txt:/app/requirements.txt
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST_APP=postgres-app
+      - POSTGRES_PORT_APP=5432
+    depends_on:
+      postgres-app:
+        condition: service_healthy
+    command: >
+      bash -c "
+        pip install -r /app/requirements.txt &&
+        echo 'Inicializando banco de dados...' &&
+        python src/init_database.py &&
+        echo 'Inicializacao e carga de dados concluida.'"
+    restart: no
+    networks:
+      - sfbikeshare-network
+
+  fastapi-app:
+    image: python:3.12-slim
+    container_name: fastapi-sfbikeshare-app
+    working_dir: /app
+    volumes:
+      - ./app:/app/app
+      - ./requirements.txt:/app/requirements.txt
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST_APP=postgres-app
+      - POSTGRES_PORT_APP=5432
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres-app:
+        condition: service_healthy
+      python-app:
+        condition: service_completed_successfully
+    command: >
+      bash -c "
+        pip install -r /app/requirements.txt &&
+        echo 'Starting FastAPI application...' &&
+        gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 --reload"
+    restart: unless-stopped
+    networks:
+      - sfbikeshare-network
+
+volumes:
+  postgres-data:
+    driver: local
+
+networks:
+  sfbikeshare-network:
+    driver: bridge
